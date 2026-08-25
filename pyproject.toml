@@ -1,0 +1,17 @@
+[project]
+name = "uber-streaming-project"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Muthu vel T J", email = "muthuveltj2000@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+uber-streaming-project = "uber_streaming_project:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
