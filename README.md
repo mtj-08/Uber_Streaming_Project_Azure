@@ -49,14 +49,15 @@ Databricks SDP: rides_raw     Azure Data Factory
    dim_location (Auto CDC SCD2), fact table (Auto CDC SCD1)
 ```
 
-*(Add architecture and DAG screenshots to `docs/images/` and reference them here, e.g. `![Architecture](docs/images/architecture.png)`)*
+<img width="988" height="378" alt="Untitled Diagram" src="https://github.com/user-attachments/assets/09719b15-1761-42ba-8d8a-d3b8215c2f42" />
+
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
 | Event ingestion | Azure Event Hubs (Kafka-compatible endpoint, Standard tier) |
-| API / event producer | Python, FastAPI, Jinja2, Faker |
+| API / event producer | Python, FastAPI, Jinja2|
 | Orchestration (batch) | Azure Data Factory (metadata-driven, parameterized pipelines) |
 | Storage | Azure Data Lake Storage Gen2 (ADLS) |
 | Stream + batch processing | Azure Databricks, Lakeflow Declarative Pipelines (SDP), PySpark Structured Streaming |
@@ -82,6 +83,9 @@ Databricks SDP: rides_raw     Azure Data Factory
    - `send_policy` — Send permission (used by the producer/API)
    - `listen_policy` — Listen permission (used by Databricks to consume events)
 
+<img width="2556" height="1082" alt="image" src="https://github.com/user-attachments/assets/16c583e5-04a7-480c-9742-0e252c2b7932" />
+
+
 ## 2. Booking API (Event Producer)
 
 A minimal FastAPI app simulates the Uber ride-booking experience:
@@ -101,8 +105,10 @@ source venv/bin/activate      # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
 uvicorn app:app --reload
 ```
-
 Visiting `/book` generates a ride event and sends it as a single-event batch to Event Hub using `EventHubProducerClient`.
+
+<img width="940" height="243" alt="image" src="https://github.com/user-attachments/assets/498125ca-af75-41af-8f02-0bbc8fec0cac" />
+
 
 ## 3. Historical Ingestion via Azure Data Factory
 
@@ -120,6 +126,9 @@ Used for **lift-and-shift** / bulk loading of static dimension and historical ri
    - **Sink:** a new dataset (`ds_ingest`) writing to a new directory in the `raw` container, with the destination filename set dynamically via `@{dataset().p_file}.json`
 
 This metadata-driven design means new files can be ingested just by adding an entry to the config JSON — no pipeline changes required.
+
+<img width="940" height="337" alt="image" src="https://github.com/user-attachments/assets/14dfb359-a19f-4b4f-9582-774c8f0829b8" />
+
 
 ## 4. Databricks Lakeflow Declarative Pipeline
 
@@ -162,22 +171,38 @@ The connection string used here is the **listen policy** string, passed in as a 
 
 Rather than an Access Connector, this project reads static dimension files (`map_cities`, `map_cancellation_reasons`, `bulk_rides`, `map_payment_methods`, `map_ride_statuses`, `map_vehicle_makes`, `map_vehicle_types`) directly from ADLS with a **SAS token**, via Pandas, then converts to Spark and writes to Delta:
 
-```python
+'''python
 import pandas as pd
 
 files = [
-    {"file": "map_cities"}, {"file": "map_cancellation_reasons"},
-    {"file": "bulk_rides"}, {"file": "map_payment_methods"},
-    {"file": "map_ride_statuses"}, {"file": "map_vehicle_makes"},
-    {"file": "map_vehicle_types"}
+{"file":"map_cities"},
+{"file":"map_cancellation_reasons"},
+{"file":"map_payment_methods"},
+{"file":"map_ride_statuses"},
+{"file":"map_vehicle_makes"},
+{"file":"map_vehicle_types"}
 ]
 
 for file in files:
-    url = f"https://<storage_account>.blob.core.windows.net/raw/ingestion/{file['file']}.json?<sas_token>"
+    url = f"https://dluberstreamingproject.blob.core.windows.net/raw/ingestion/{file['file']}.json?sp=r&st=2026-08-28T12:55:20Z&se=2026-08-28T21:10:20Z&sv=2026-02-06&sr=c&sig=5L0plPxfLcDDgbfceVa0n8AU8mrgvN98B9dTVdoJkU8%3D"
+    
     df = pd.read_json(url)
     df_spark = spark.createDataFrame(df)
-    df_spark.write.format("delta").mode("overwrite").saveAsTable(f"uber.bronze.{file['file']}")
-```
+
+    (df_spark.write.format('delta')
+     .mode('overwrite')
+     .option("overwriteSchema", "true")
+     .saveAsTable(f"uber.bronze.{file['file']}")
+     )
+url = f"https://dluberstreamingproject.blob.core.windows.net/raw/ingestion/bulk_rides.json?sp=r&st=2026-08-28T12:55:20Z&se=2026-08-28T21:10:20Z&sv=2026-02-06&sr=c&sig=5L0plPxfLcDDgbfceVa0n8AU8mrgvN98B9dTVdoJkU8%3D"
+
+df = pd.read_json(url)
+df_spark = spark.createDataFrame(df)
+if not spark.catalog.tableExists("uber.bronze.bulk_rides"):
+    df_spark.write.format("delta")\
+            .mode("overwrite")\
+            .saveAsTable(f"uber.bronze.bulk_rides")
+'''
 
 > ⚠️ **Never commit SAS tokens or connection strings.** Store them as Databricks pipeline configuration/secrets, not inline in code.
 
@@ -214,29 +239,74 @@ The rendered SQL is then adapted into a **streaming SQL table** definition with 
 
 ```sql
 CREATE OR REFRESH STREAMING TABLE silver_obt AS
-SELECT
-    stg_rides.ride_id, stg_rides.confirmation_number, ...
-    vehicle_makes.vehicle_make,
-    map_vehicle_types.vehicle_type, ...
-    map_ride_statuses.ride_status,
-    map_payment_methods.payment_method, ...
-    map_cities.city AS pickup_city, ...
-    cancellation_reason.cancellation_reason
-FROM
-    STREAM(uber.bronze.stg_rides) stg_rides
-    WATERMARK booking_timestamp DELAY OF INTERVAL 3 minutes
-    LEFT JOIN uber.bronze.map_vehicle_makes vehicle_makes
-        ON stg_rides.vehicle_make_id = vehicle_makes.vehicle_make_id
-    LEFT JOIN uber.bronze.map_vehicle_types map_vehicle_types
-        ON stg_rides.vehicle_type_id = map_vehicle_types.vehicle_type_id
-    LEFT JOIN uber.bronze.map_ride_statuses map_ride_statuses
-        ON stg_rides.ride_status_id = map_ride_statuses.ride_status_id
-    LEFT JOIN uber.bronze.map_payment_methods map_payment_methods
-        ON stg_rides.payment_method_id = map_payment_methods.payment_method_id
-    LEFT JOIN uber.bronze.map_cities map_cities
-        ON stg_rides.pickup_city_id = map_cities.city_id
-    LEFT JOIN uber.bronze.map_cancellation_reasons cancellation_reason
-        ON stg_rides.cancellation_reason_id = cancellation_reason.cancellation_reason_id
+
+    SELECT 
+        
+           stg_rides.ride_id, stg_rides.confirmation_number, stg_rides.passenger_id, stg_rides.driver_id, stg_rides.vehicle_id, stg_rides.pickup_location_id, stg_rides.dropoff_location_id, stg_rides.vehicle_type_id, stg_rides.vehicle_make_id, stg_rides.payment_method_id, stg_rides.ride_status_id, stg_rides.pickup_city_id, stg_rides.dropoff_city_id, stg_rides.cancellation_reason_id, stg_rides.passenger_name, stg_rides.passenger_email, stg_rides.passenger_phone, stg_rides.driver_name, stg_rides.driver_rating, stg_rides.driver_phone, stg_rides.driver_license, stg_rides.vehicle_model, stg_rides.vehicle_color, stg_rides.license_plate, stg_rides.pickup_address, stg_rides.pickup_latitude, stg_rides.pickup_longitude, stg_rides.dropoff_address, stg_rides.dropoff_latitude, stg_rides.dropoff_longitude, stg_rides.distance_miles, stg_rides.duration_minutes, stg_rides.booking_timestamp, stg_rides.pickup_timestamp, stg_rides.dropoff_timestamp, stg_rides.base_fare, stg_rides.distance_fare, stg_rides.time_fare, stg_rides.surge_multiplier, stg_rides.subtotal, stg_rides.tip_amount, stg_rides.total_fare, stg_rides.rating
+              
+              ,
+               
+        
+           vehicle_makes.vehicle_make
+              
+              ,
+               
+        
+           map_vehicle_types.vehicle_type,map_vehicle_types.description,map_vehicle_types.base_rate,map_vehicle_types.per_mile,map_vehicle_types.per_minute
+              
+              ,
+               
+        
+           map_ride_statuses.ride_status
+              
+              ,
+               
+        
+           map_payment_methods.payment_method, map_payment_methods.is_card, map_payment_methods.requires_auth
+              
+              ,
+               
+        
+           map_cities.city as pickup_city, map_cities.state, map_cities.region, map_cities.updated_at as city_updated_at
+              
+              ,
+               
+        
+           cancellation_reason.cancellation_reason 
+               
+        
+    FROM
+        
+              
+                STREAM (uber.bronze.stg_rides) 
+                WATERMARK booking_timestamp DELAY OF INTERVAL 3 minutes
+                stg_rides
+                
+        
+              
+                LEFT JOIN uber.bronze.map_vehicle_makes vehicle_makes ON stg_rides.vehicle_make_id=vehicle_makes.vehicle_make_id
+                
+        
+              
+                LEFT JOIN uber.bronze.map_vehicle_types map_vehicle_types ON stg_rides.vehicle_type_id=map_vehicle_types.vehicle_type_id
+                
+        
+              
+                LEFT JOIN uber.bronze.map_ride_statuses map_ride_statuses ON stg_rides.ride_status_id=map_ride_statuses.ride_status_id
+                
+        
+              
+                LEFT JOIN uber.bronze.map_payment_methods map_payment_methods ON stg_rides.payment_method_id=map_payment_methods.payment_method_id
+                
+        
+              
+                LEFT JOIN uber.bronze.map_cities map_cities ON stg_rides.pickup_city_id=map_cities.city_id
+                
+        
+              
+                LEFT JOIN uber.bronze.map_cancellation_reasons cancellation_reason ON stg_rides.cancellation_reason_id=cancellation_reason.cancellation_reason_id
+
+         
 ```
 
 The 3-minute watermark on `booking_timestamp` handles late-arriving events while bounding state size.
@@ -278,15 +348,16 @@ All other dimensions and the fact table follow the same pattern with `stored_as_
 
 ## Pipeline DAG
 
-*(Insert your Lakeflow Declarative Pipeline DAG screenshot here, e.g. `docs/images/dag.png`)*
+<img width="940" height="535" alt="image" src="https://github.com/user-attachments/assets/855352d8-e3c3-4fce-8359-929a3eb9a3fd" />
+
 
 The full pipeline graph shows the flow from `rides_raw` / `bulk_rides` → `stg_rides` → `silver_obt` → the Gold dimension and fact tables, all managed declaratively by SDP.
 
 ## Setup & Installation
 
 ```bash
-git clone <your-repo-url>
-cd <repo-name>
+git link <>
+cd <Uber_Streaming_Project_Azure>
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -346,4 +417,4 @@ The Lakeflow pipeline can be scheduled to run continuously or triggered every 1�
 
 ---
 
-**Note:** This project was built as a hands-on exploration of Azure Event Hubs' Kafka-compatible surface, Azure Data Factory metadata-driven pipelines, and Databricks Lakeflow Declarative Pipelines (SDP) with Auto CDC for dimensional modeling.
+**Note:** This project was built as a hands-on exploration of Azure Event Hubs' Kafka-compatible surface, Azure Data Factory metadata-driven pipelines, and Databricks Lakeflow Declarative Pipelines (SDP) with Auto CDC for dimensional modeling. The API app used here is referred from Ansh Lamba's git repository. 
