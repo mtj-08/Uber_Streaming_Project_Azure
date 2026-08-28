@@ -171,40 +171,7 @@ The connection string used here is the **listen policy** string, passed in as a 
 
 Rather than an Access Connector, this project reads static dimension files (`map_cities`, `map_cancellation_reasons`, `bulk_rides`, `map_payment_methods`, `map_ride_statuses`, `map_vehicle_makes`, `map_vehicle_types`) directly from ADLS with a **SAS token**, via Pandas, then converts to Spark and writes to Delta:
 
-'''python
-import pandas as pd
-
-files = [
-{"file":"map_cities"},
-{"file":"map_cancellation_reasons"},
-{"file":"map_payment_methods"},
-{"file":"map_ride_statuses"},
-{"file":"map_vehicle_makes"},
-{"file":"map_vehicle_types"}
-]
-
-for file in files:
-    url = f"https://dluberstreamingproject.blob.core.windows.net/raw/ingestion/{file['file']}.json?sp=r&st=2026-08-28T12:55:20Z&se=2026-08-28T21:10:20Z&sv=2026-02-06&sr=c&sig=5L0plPxfLcDDgbfceVa0n8AU8mrgvN98B9dTVdoJkU8%3D"
-    
-    df = pd.read_json(url)
-    df_spark = spark.createDataFrame(df)
-
-    (df_spark.write.format('delta')
-     .mode('overwrite')
-     .option("overwriteSchema", "true")
-     .saveAsTable(f"uber.bronze.{file['file']}")
-     )
-url = f"https://dluberstreamingproject.blob.core.windows.net/raw/ingestion/bulk_rides.json?sp=r&st=2026-08-28T12:55:20Z&se=2026-08-28T21:10:20Z&sv=2026-02-06&sr=c&sig=5L0plPxfLcDDgbfceVa0n8AU8mrgvN98B9dTVdoJkU8%3D"
-
-df = pd.read_json(url)
-df_spark = spark.createDataFrame(df)
-if not spark.catalog.tableExists("uber.bronze.bulk_rides"):
-    df_spark.write.format("delta")\
-            .mode("overwrite")\
-            .saveAsTable(f"uber.bronze.bulk_rides")
-'''
-
-> ⚠️ **Never commit SAS tokens or connection strings.** Store them as Databricks pipeline configuration/secrets, not inline in code.
+refer **Bronze_ADLS.pynb**
 
 ### Silver Layer
 
